@@ -1,0 +1,12 @@
+{
+  "display_name": "Obsession Meter",
+  "loading_order": 10,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Custom",
+  "version": "1.6.6",
+  "homePage": "",
+  "auto_update": false
+}

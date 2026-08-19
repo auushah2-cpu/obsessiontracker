@@ -1,0 +1,1059 @@
+@font-face {
+  font-family: "Yandere";
+  src: url("YANDERE.ttf") format("truetype");
+  font-display: swap;
+}
+
+/* Top button — owns its own fixed position, independent of any
+   SillyTavern-internal container. High z-index and pointer-events:auto
+   so nothing ST renders can sit on top of it or eat its clicks.
+   Draggable exactly like the floating heart-crack button (see
+   makeDraggable / om-toggle-btn below), just anchored near the top by
+   default instead of the bottom-right corner. */
+#om-topbar-button {
+  /* !important here matches the inline forceFixedStyle() guard set
+     in index.js — belt-and-suspenders so a host-page/theme rule that
+     also targets position/z-index/visibility/opacity/pointer-events
+     can't silently win the cascade and blank this element out. */
+  position: fixed !important;
+  top: 6px;
+  right: 20px;
+  z-index: 999999999 !important;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(145deg, #2a1830, #1a0f20);
+  border: 1px solid #5a3a66;
+  color: #d98fc4;
+  font-size: 12px;
+  font-family: sans-serif;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: grab;
+  touch-action: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+#om-topbar-button:active {
+  cursor: grabbing;
+}
+#om-topbar-button:hover {
+  border-color: #d98fc4;
+}
+#om-topbar-button i {
+  color: #e0558f;
+}
+
+/* Pulse animation used to draw attention to the top-bar button (e.g.
+   after a reset). Previously scoped to the now-removed round
+   #om-toggle-btn; kept as a class so it can be applied to whichever
+   element needs it. */
+.om-toggle-pulse {
+  animation: om-pulse 1.2s ease-out;
+}
+
+@keyframes om-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(217, 143, 196, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 14px rgba(217, 143, 196, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(217, 143, 196, 0);
+  }
+}
+
+#om-panel {
+  position: fixed !important;
+  right: 20px;
+  bottom: 150px;
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  max-height: 460px;
+  /* BUGFIX: without a min-height, this panel's height is 100% determined
+     by its flex-child content — `.om-panel-body { flex: 1; }` inside a
+     flex-column parent with no explicit height. On most desktop browsers
+     that shrink-to-fit resolves to content size (~80–170px) and the
+     panel is visible. On some Android WebViews (which is how ST is
+     actually used on Termux and other mobile setups) the flex height
+     calculation on a container with only `max-height` set can collapse
+     to zero — the panel is technically "open" (display: flex, position
+     fixed, z-index max) but paints 300×0 with `overflow: hidden`
+     clipping every child. Nothing errors, nothing logs, DevTools shows
+     the element in the tree with the right classes and inline styles —
+     it just doesn't have any pixels. A small min-height guarantees a
+     non-zero paint area even when the flex layout misbehaves. */
+  min-height: 120px;
+  background: #16111a;
+  border: 1px solid #3d2a45;
+  border-radius: 12px;
+  /* BUGFIX: this used to be 999999 — far below #om-topbar-button's
+     2147483646. The button is deliberately given a near-max z-index
+     so nothing ST renders can cover it, but that protection never
+     extended to the panel the button opens. Anything else on the
+     page sitting anywhere in that gap (a modal, a drawer, another
+     extension) would render on top of the panel while leaving the
+     button fully visible above it — "click it, nothing shows" with
+     the panel actually open and fully rendered the whole time,
+     just buried. Matching the button's z-index here closes that gap. */
+  z-index: 999999999 !important;
+  pointer-events: auto;
+  /* BUGFIX (THE silent bug that produces "nothing pops up, no matter
+     the command or the button, nothing in the console"): this used
+     to be plain `display: flex;`. The JS side writes
+     `panelEl.style.setProperty("display", "flex", "important")` inline
+     when opening — so on paper the panel should always be shown. But
+     that guarantees the *shown* state via inline important; the
+     stylesheet declaration itself was still un-!important. That means
+     any rule from anywhere else on the page targeting #om-panel with
+     an equal-or-higher specificity + !important could silently win —
+     e.g. a SillyTavern theme setting `body #om-panel { display: none
+     !important }` for its own drawer nesting, or (more commonly) a
+     theme's global `#om-panel[hidden]` / `.some-container > *`
+     override that lands after ours in the cascade. When that happens
+     the .om-hidden class is removed correctly, the inline write
+     happens correctly, but the panel still resolves to display:none
+     because the losing cascade path is the one browsers with
+     stricter cascade handling actually pick when inline !important
+     and rule !important tie (they shouldn't, but real Android
+     WebViews really do get this wrong). Making the base display
+     !important closes the last gap: shown state is now as protected
+     as hidden state, and no external rule can bury the panel. */
+  display: flex !important;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+  font-family: inherit;
+  color: #e8dcee;
+  /* BUGFIX (the actual root cause of "panel doesn't pop up on
+     Termux/mobile, works fine on desktop"): this block used to be
+     `-webkit-transform: translateZ(0); transform: translateZ(0);
+     will-change: transform;` as a cargo-culted "force GPU
+     compositing" hack. On desktop Chrome/Firefox that's a harmless
+     no-op — the panel renders exactly the same with or without it.
+     On the Android System WebView bundled with Termux (and any older
+     Chromium-based mobile browser), the combination `position: fixed`
+     + `transform: translateZ(0)` + `will-change: transform` on the
+     SAME element is a long-standing rendering bug: the fixed element
+     gets promoted to its own compositing layer, but the layer's
+     transform baseline and the fixed positioning's viewport anchor
+     disagree, and the panel ends up rendered in an offscreen tile
+     that the browser never paints back into the visible surface.
+     Everything looks correct — element is in the DOM, class is
+     right, computed display is flex, getBoundingClientRect returns a
+     nonzero rect — but there's nothing on screen, no console error,
+     no anything. And ensurePanelOnScreen() can't help because as far
+     as it's concerned the rect IS on screen; the browser just
+     doesn't paint it. Removing the transform hints entirely (the
+     panel doesn't animate itself — it has no reason to be composited)
+     eliminates this whole class of bug. This is *the* line that was
+     making the panel invisible for you. */
+}
+
+/* BUGFIX (the main fix — see forceFixedStyle() in index.js): the
+   panel's open/closed state used to be driven purely by an inline
+   panelEl.style.display write, with no !important. Any other rule
+   on the page that also happens to set `display` on this element
+   (including something as generic as a wide `.some-ST-theme *`
+   selector, or simply a stylesheet that finishes loading after
+   ours) can silently win and either pin the panel permanently
+   hidden or permanently shown regardless of what the JS thinks
+   panelOpen is — with nothing to log, since nothing throws. A
+   dedicated !important class closes that gap: inline !important
+   (set by forceFixedStyle for position/z-index/etc.) and this class
+   together mean nothing else on the page can out-rank either the
+   panel's positioning or its shown/hidden state. */
+/* BUGFIX: promoted to `#om-panel.om-hidden` from just `.om-hidden`.
+   The shown-state rule at the top of this file is now
+   `#om-panel { display: flex !important; }` (ID specificity 100,
+   important), which was necessary to keep any external theme rule
+   from burying the shown state. With that in place, a plain
+   `.om-hidden { display: none !important; }` — class specificity
+   10, important — LOSES the specificity tie-break against the shown
+   rule (equal-important, higher specificity wins), and the panel
+   ends up permanently visible even when JS is asking for hidden.
+   Adding the `#om-panel` prefix bumps this to specificity 110, so
+   it correctly beats the shown rule when the class is present. */
+#om-panel.om-hidden {
+  display: none !important;
+}
+
+/* Narrow phones: keep the button/panel from ever landing partway
+   off the left/right edge of the viewport. */
+@media (max-width: 380px) {
+  #om-topbar-button {
+    right: 12px;
+  }
+  #om-panel {
+    right: 12px;
+    left: 12px;
+    width: auto;
+  }
+}
+
+.om-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: linear-gradient(90deg, #2a1830, #1f1424);
+  border-bottom: 1px solid #3d2a45;
+  cursor: grab;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  touch-action: none;
+  user-select: none;
+}
+
+.om-panel-header:active {
+  cursor: grabbing;
+}
+
+.om-settings-btn {
+  cursor: pointer;
+  opacity: 0.75;
+  padding: 4px;
+}
+
+.om-settings-btn:hover {
+  opacity: 1;
+}
+
+.om-panel-body {
+  overflow-y: auto;
+  padding: 10px;
+  flex: 1;
+}
+
+.om-empty {
+  padding: 20px 10px;
+  text-align: center;
+  font-size: 12.5px;
+  opacity: 0.65;
+  line-height: 1.5;
+}
+
+.om-empty code {
+  display: block;
+  margin-top: 8px;
+  padding: 4px 6px;
+  background: #241a29;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.om-char-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.om-char-row:hover {
+  background: #241a29;
+}
+
+.om-char-row.om-flash {
+  animation: om-flash-bg 1.4s ease-out;
+}
+
+@keyframes om-flash-bg {
+  0% {
+    background: rgba(217, 143, 196, 0.25);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.om-char-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #3d2a45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #d98fc4;
+  flex-shrink: 0;
+}
+
+.om-char-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.om-char-name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.om-char-sub {
+  font-size: 11.5px;
+  opacity: 0.6;
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.om-char-sanity {
+  opacity: 0.85;
+}
+
+/* Compact heart row used in the character list preview */
+.om-char-row .om-hearts-row {
+  gap: 1px;
+}
+
+.om-char-row .om-heart {
+  width: 9px;
+  height: 9px;
+}
+
+.om-char-row i.fa-chevron-right {
+  opacity: 0.4;
+  font-size: 11px;
+}
+
+.om-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.om-back-btn {
+  cursor: pointer;
+  opacity: 0.75;
+  padding: 4px;
+}
+
+.om-back-btn:hover {
+  opacity: 1;
+}
+
+.om-detail-name {
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+.om-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.om-meter-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.om-meter-label {
+  opacity: 0.85;
+}
+
+.om-meter-value {
+  font-weight: 700;
+  opacity: 0.95;
+}
+
+.om-meter-track {
+  width: 100%;
+  height: 9px;
+  background: #241a29;
+  border-radius: 5px;
+  overflow: hidden;
+  border: 1px solid #3d2a45;
+}
+
+.om-meter-fill {
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.om-meter-hearts {
+  padding: 6px 8px;
+  background: #1c1420;
+  border: 1px solid #3d2a45;
+  border-radius: 8px;
+}
+
+.om-hearts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 2px;
+}
+
+.om-heart {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+  display: inline-block;
+  vertical-align: middle;
+  transition: opacity 0.5s ease, transform 0.3s ease, filter 0.5s ease;
+}
+
+.om-heart-empty-img {
+  opacity: 0.18;
+  filter: grayscale(1);
+}
+
+.om-heart-filled-img {
+  opacity: 1;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.4));
+}
+
+/* Once obsession hits 9+ hearts, the row itself gets an unsettling
+   pulse — the panel should visually escalate along with the number,
+   not just report it neutrally. */
+.om-hearts-danger .om-heart-filled-img {
+  animation: om-heart-flicker 1.8s ease-in-out infinite;
+}
+
+@keyframes om-heart-flicker {
+  0%, 100% {
+    filter: drop-shadow(0 0 2px rgba(163, 19, 47, 0.5));
+    transform: scale(1);
+  }
+  50% {
+    filter: drop-shadow(0 0 7px rgba(163, 19, 47, 0.95));
+    transform: scale(1.15);
+  }
+}
+
+.om-settings-section {
+  margin-bottom: 16px;
+}
+
+.om-settings-section label {
+  display: block;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin-bottom: 6px;
+}
+
+.om-key-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.om-key-chip {
+  background: #241a29;
+  border: 1px solid #3d2a45;
+  border-radius: 12px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.om-remove-key {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 10px;
+}
+
+.om-remove-key:hover {
+  opacity: 1;
+}
+
+.om-add-key-row {
+  display: flex;
+  gap: 6px;
+}
+
+.om-new-key-input,
+.om-min-input,
+.om-max-input,
+.om-start-input,
+.om-decay-amount-input {
+  background: #241a29;
+  border: 1px solid #3d2a45;
+  border-radius: 6px;
+  color: #e8dcee;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.om-new-key-input {
+  flex: 1;
+}
+
+.om-min-input,
+.om-max-input,
+.om-start-input,
+.om-decay-amount-input {
+  width: 60px;
+}
+
+.om-range-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.om-checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 7px;
+  text-transform: none !important;
+  font-size: 12.5px !important;
+  opacity: 0.9 !important;
+  cursor: pointer;
+}
+
+.om-decay-amount-row {
+  margin-top: 8px;
+}
+
+.om-tag-help code {
+  display: block;
+  background: #241a29;
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 10.8px;
+  word-break: break-word;
+  margin-bottom: 6px;
+}
+
+.om-tag-help p {
+  font-size: 11.3px;
+  opacity: 0.65;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------
+   Extensions-tab settings drawer (a second, always-reachable way
+   into the same settings the floating panel's gear icon opens —
+   see buildSettingsDrawer in index.js).
+--------------------------------------------------------------- */
+
+.om-settings-drawer .inline-drawer-content {
+  background: #16111a;
+  border: 1px solid #3d2a45;
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: #e8dcee;
+  margin-top: 4px;
+}
+
+.om-drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.om-drawer-actions .menu_button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.om-drawer-fields {
+  margin-top: 14px;
+  border-top: 1px solid #3d2a45;
+  padding-top: 14px;
+}
+
+/* ---------------------------------------------------------------
+   Detail tabs (Meters / Diary / Inventory)
+--------------------------------------------------------------- */
+
+.om-detail-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #3d2a45;
+}
+
+.om-detail-tab {
+  padding: 6px 10px;
+  font-size: 12px;
+  opacity: 0.55;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.om-detail-tab:hover {
+  opacity: 0.8;
+}
+
+.om-detail-tab.om-tab-active {
+  opacity: 1;
+  border-bottom-color: #d98fc4;
+  font-weight: 600;
+}
+
+.om-imagegen-help {
+  font-size: 11px;
+  opacity: 0.6;
+  line-height: 1.5;
+  margin: 6px 0 10px;
+}
+
+.om-imagegen-fields label {
+  display: block;
+  font-size: 10.5px;
+  text-transform: none;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.om-imagegen-fields input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #241a29;
+  border: 1px solid #3d2a45;
+  border-radius: 6px;
+  color: #e8dcee;
+  padding: 5px 8px;
+  font-size: 11.5px;
+}
+
+/* ---------------------------------------------------------------
+   Diary — styled as pinned paper pages against the dark panel, not
+   just another chat-style bubble list.
+--------------------------------------------------------------- */
+
+.om-diary {
+  position: relative;
+}
+
+.om-diary-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+/* The compose box itself reads as a blank ruled page waiting to be
+   written on — faint blue rule lines + a red margin, like the
+   entries below it. */
+.om-new-diary-text {
+  background:
+    linear-gradient(#f4ecd8, #f4ecd8) padding-box,
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 23px,
+      rgba(94, 62, 40, 0.22) 24px
+    );
+  background-position: 0 8px;
+  border: 1px solid #3d2a45;
+  border-left: 3px solid #b9676f;
+  border-radius: 3px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  color: #2b2016;
+  padding: 8px 10px 8px 14px;
+  font-size: 12.5px;
+  line-height: 24px;
+  font-family: Georgia, "Times New Roman", serif;
+  resize: vertical;
+  min-height: 72px;
+}
+
+.om-new-diary-text::placeholder {
+  color: rgba(43, 32, 22, 0.45);
+  font-style: italic;
+}
+
+.om-add-diary-btn {
+  align-self: flex-end;
+  background: #3d2a45;
+  color: #e8dcee;
+  border: 1px solid #5a3a66;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.om-add-diary-btn:hover {
+  background: #4a3355;
+}
+
+/* A thin row of "spiral binding" holes across the top of the whole
+   page stack, so the list reads as a notebook rather than a plain
+   feed of cards. */
+.om-diary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  position: relative;
+  padding-top: 16px;
+}
+
+.om-diary-list::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 4px;
+  right: 4px;
+  height: 12px;
+  opacity: 0.55;
+  background-image: radial-gradient(circle, #0d0710 2.6px, transparent 2.8px);
+  background-size: 26px 12px;
+  background-repeat: repeat-x;
+  background-position: center;
+}
+
+.om-diary-entry {
+  position: relative;
+  padding: 14px 16px 16px 32px;
+  border-radius: 2px;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 23px,
+      rgba(94, 62, 40, 0.16) 24px
+    ),
+    linear-gradient(160deg, #f6efdc 0%, #ecdfc0 100%);
+  background-position: 0 4px, 0 0;
+  color: #2b2016;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.08) inset;
+}
+
+/* Faint torn/deckle edge hanging off the bottom of each page. */
+.om-diary-entry::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: -6px;
+  height: 8px;
+  background: inherit;
+  background-color: #ecdfc0;
+  opacity: 0.9;
+  clip-path: polygon(
+    0% 0%, 4% 100%, 8% 0%, 12% 100%, 16% 0%, 20% 100%, 24% 0%, 28% 100%,
+    32% 0%, 36% 100%, 40% 0%, 44% 100%, 48% 0%, 52% 100%, 56% 0%, 60% 100%,
+    64% 0%, 68% 100%, 72% 0%, 76% 100%, 80% 0%, 84% 100%, 88% 0%, 92% 100%,
+    96% 0%, 100% 100%, 100% 0%
+  );
+}
+
+/* Red margin rule, like a school notebook page. */
+.om-diary-entry::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 22px;
+  width: 1px;
+  background: rgba(185, 60, 70, 0.55);
+}
+
+.om-diary-meta {
+  position: relative;
+  font-size: 9.5px;
+  color: rgba(43, 32, 22, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.om-diary-text {
+  position: relative;
+  font-size: 13px;
+  line-height: 24px;
+}
+
+/* Tier 0 — steady: plain ink on paper, calm and legible. */
+.om-diary-tier-0 .om-diary-text {
+  font-family: Georgia, "Times New Roman", serif;
+  color: #2b2016;
+}
+
+/* Tier 1 — uneasy: same hand, a faint restless sway. */
+.om-diary-tier-1 .om-diary-text {
+  font-family: Georgia, "Times New Roman", serif;
+  color: #35211b;
+  letter-spacing: 0.02em;
+  display: inline-block;
+  animation: om-diary-sway 4.5s ease-in-out infinite;
+}
+
+@keyframes om-diary-sway {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(0.4deg); }
+}
+
+/* Tier 2 — unraveling: switches to the Yandere display font, the
+   page itself takes on a stained/scorched look, jittered words (see
+   wrapJitterWords in index.js). */
+.om-diary-tier-2 {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 23px,
+      rgba(94, 62, 40, 0.16) 24px
+    ),
+    radial-gradient(ellipse at 85% 15%, rgba(122, 22, 38, 0.28) 0%, transparent 45%),
+    linear-gradient(160deg, #ecdcc4 0%, #ddc7ab 100%);
+  background-position: 0 4px, 0 0, 0 0;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.55), inset 0 0 24px rgba(122, 22, 38, 0.12);
+}
+
+.om-diary-tier-2::after {
+  background-color: #ddc7ab;
+}
+
+.om-diary-tier-2 .om-diary-text {
+  font-family: "Yandere", Georgia, serif;
+  font-size: 14px;
+  color: #7a1626;
+  text-shadow: 0 0 3px rgba(163, 19, 47, 0.25);
+}
+
+/* Tier 3 — feral: darker scorched page, bigger brighter ink, heavier
+   glow, trembling words. */
+.om-diary-tier-3 {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 23px,
+      rgba(30, 10, 10, 0.25) 24px
+    ),
+    radial-gradient(ellipse at 80% 10%, rgba(122, 22, 38, 0.5) 0%, transparent 55%),
+    radial-gradient(ellipse at 10% 90%, rgba(20, 8, 8, 0.55) 0%, transparent 60%),
+    linear-gradient(160deg, #d9c2a4 0%, #c2a37e 100%);
+  background-position: 0 4px, 0 0, 0 0, 0 0;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.6), inset 0 0 30px rgba(122, 22, 38, 0.28);
+}
+
+.om-diary-tier-3::before {
+  background: rgba(163, 19, 47, 0.7);
+}
+
+.om-diary-tier-3::after {
+  background-color: #c2a37e;
+}
+
+.om-diary-tier-3 .om-diary-text {
+  font-family: "Yandere", Georgia, serif;
+  font-size: 15px;
+  color: #7a1020;
+  text-shadow: 0 0 5px rgba(163, 19, 47, 0.5), 0 0 12px rgba(163, 19, 47, 0.25);
+}
+
+.om-diary-tier-3 .om-diary-word {
+  animation: om-word-tremble 0.35s ease-in-out infinite alternate;
+}
+
+@keyframes om-word-tremble {
+  from { filter: blur(0px); }
+  to { filter: blur(0.4px); }
+}
+
+/* ---------------------------------------------------------------
+   Inventory
+--------------------------------------------------------------- */
+
+.om-add-item-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.om-add-item-row input {
+  background: #241a29;
+  border: 1px solid #3d2a45;
+  border-radius: 6px;
+  color: #e8dcee;
+  padding: 5px 8px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.om-add-item-btn {
+  background: #3d2a45;
+  color: #e8dcee;
+  border: 1px solid #5a3a66;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.om-add-item-btn:hover {
+  background: #4a3355;
+}
+
+.om-inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.om-item-slot {
+  aspect-ratio: 1;
+  background: #1c1420;
+  border: 2px solid #3d2a45;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.om-item-slot:hover {
+  border-color: #5a3a66;
+}
+
+.om-item-slot img {
+  width: 78%;
+  height: 78%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.om-item-slot-placeholder {
+  font-size: 20px;
+  opacity: 0.35;
+}
+
+.om-item-slot-pending {
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+.om-item-name-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  font-size: 8.5px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 2px 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.om-item-detail-image {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.om-item-detail-image img {
+  width: 110px;
+  height: 110px;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #1c1420;
+  border: 2px solid #3d2a45;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.om-item-detail-placeholder {
+  width: 110px;
+  height: 110px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  opacity: 0.35;
+  background: #1c1420;
+  border: 2px solid #3d2a45;
+  border-radius: 8px;
+}
+
+.om-item-detail-desc {
+  font-size: 12.5px;
+  line-height: 1.55;
+  opacity: 0.85;
+  margin: 0 0 14px;
+}
+
+.om-item-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.om-item-regen-btn,
+.om-item-remove-btn {
+  flex: 1;
+  background: #241a29;
+  border: 1px solid #3d2a45;
+  border-radius: 6px;
+  color: #e8dcee;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.om-item-regen-btn:hover:not(:disabled),
+.om-item-remove-btn:hover {
+  background: #2e2033;
+}
+
+.om-item-regen-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.om-item-url-row {
+  display: flex;
+  gap: 6px;
+}
+
+.om-item-url-input {
+  flex: 1;
+  min-width: 0;
+  background: #241a29;
+  border: 1px solid #3d2a45;
+  border-radius: 6px;
+  color: #e8dcee;
+  padding: 5px 8px;
+  font-size: 11.5px;
+}
+
+.om-item-url-btn {
+  background: #3d2a45;
+  color: #e8dcee;
+  border: 1px solid #5a3a66;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.om-item-url-btn:hover {
+  background: #4a3355;
+}
+
