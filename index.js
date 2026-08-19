@@ -62,7 +62,7 @@
       const d = document.createElement("div");
       d.textContent = "[ObsessionMeter] " + message;
       d.style.cssText =
-        "position:fixed;top:0;left:0;right:0;z-index:999999999;" +
+        "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
         "background:#b91c1c;color:#fff;font-size:12px;padding:8px 12px;" +
         "text-align:center;font-family:sans-serif;cursor:pointer;";
       d.title = "Tap to dismiss";
@@ -1424,24 +1424,94 @@
     }
   }
 
-  function togglePanel() {
-    // DIAGNOSTIC: this fires the instant togglePanel() runs, before any
-    // panel-building or rendering happens. If you tap the button and
-    // this does NOT show up as a small popup, the tap itself never
-    // reached this function — that's a click/event-listener problem,
-    // not a CSS/rendering problem, and everything below this point is
-    // irrelevant. If it DOES show up, the tap is registering fine and
-    // whatever's wrong is downstream, in how the panel paints.
-    try {
-      if (window.toastr) {
-        window.toastr.info("Obsession Meter: toggle fired (panelOpen will be " + !panelOpen + ")", "", { timeOut: 2500 });
-      } else {
-        alert("[ObsessionMeter] toggle fired");
-      }
-    } catch (e) {
-      /* even the diagnostic itself failing is useful to know, but must
-         never block the actual toggle below */
+  // ---------------------------------------------------------------
+  // Popover positioning — ported from Phone UI's
+  // positionPanelNearButton() / positionPanelForOpen(). This is about
+  // where the panel appears on screen when it opens, not how it's
+  // styled: previously the panel always opened at a single hard-coded
+  // fallback spot (bottom-right corner) regardless of where the
+  // topbar icon actually is, and only got nudged back on-screen
+  // *after* the fact (ensurePanelOnScreen) if that fixed spot happened
+  // to be off-screen. Phone UI instead treats the panel like a
+  // popover anchored to its own toggle button: measure the panel,
+  // pick a side with room, hug the button, clamp fully on-screen —
+  // computed and applied *before* the panel is revealed, so it opens
+  // already in the right place instead of flashing at the old one
+  // first. A manually dragged position is sticky and always wins,
+  // exactly like Phone UI's panelPos.
+  //
+  // One deliberate adaptation for this extension: Phone UI's button
+  // floats bottom-right, so its popover prefers opening *above* the
+  // button when there's room. This extension's icon instead lives in
+  // ST's own top icon row, pinned to the very top of the viewport —
+  // there's essentially never room above it — so this prefers
+  // opening *below* the icon instead, only falling back upward if
+  // there's truly more room that way.
+  function positionPanelNearButton() {
+    const btn = document.getElementById("om-topbar-button");
+    if (!btn || !panelEl) return false;
+    const btnRect = btn.getBoundingClientRect();
+
+    // The panel needs real dimensions to measure, but it's normally
+    // display:none while closed (om-hidden). Make it measurable
+    // without letting it actually flash on screen mid-measurement —
+    // same "swap to visibility:hidden instead of display:none for a
+    // moment" trick Phone UI uses.
+    const wasHidden = panelEl.classList.contains("om-hidden");
+    if (wasHidden) {
+      panelEl.style.setProperty("visibility", "hidden", "important");
+      panelEl.classList.remove("om-hidden");
     }
+    const panelW = panelEl.offsetWidth || 300;
+    const panelH = panelEl.offsetHeight || 400;
+    if (wasHidden) {
+      panelEl.classList.add("om-hidden");
+      panelEl.style.removeProperty("visibility");
+    }
+    if (!panelW || !panelH) return false; // couldn't measure — leave existing position alone
+
+    const margin = 12;
+    const spaceBelow = window.innerHeight - btnRect.bottom;
+    const spaceAbove = btnRect.top;
+    const top =
+      spaceBelow >= panelH + margin || spaceBelow > spaceAbove
+        ? btnRect.bottom + margin
+        : btnRect.top - panelH - margin;
+
+    // Horizontally, hug the icon's right edge like a popover, then
+    // clamp fully on-screen so it can never hang off either edge.
+    const left = btnRect.right - panelW;
+
+    const clampedLeft = Math.min(Math.max(margin, left), window.innerWidth - panelW - margin);
+    const clampedTop = Math.min(Math.max(margin, top), window.innerHeight - panelH - margin);
+
+    panelEl.style.left = `${clampedLeft}px`;
+    panelEl.style.top = `${clampedTop}px`;
+    panelEl.style.right = "auto";
+    panelEl.style.bottom = "auto";
+    return true;
+  }
+
+  // Decides how to place the panel right before it opens: a manually
+  // dragged spot (sticky — set by dragging the panel's own header,
+  // saved as panelX/panelY) wins if one exists; otherwise it
+  // auto-follows the topbar icon. Mirrors Phone UI's
+  // positionPanelForOpen() exactly.
+  function positionPanelForOpen() {
+    if (!panelEl) return;
+    const gs = getGlobalSettings();
+    if (gs.panelX !== null && gs.panelY !== null) {
+      const [px, py] = clampToViewport(gs.panelX, gs.panelY, 300, 400);
+      panelEl.style.left = `${px}px`;
+      panelEl.style.top = `${py}px`;
+      panelEl.style.right = "auto";
+      panelEl.style.bottom = "auto";
+    } else {
+      positionPanelNearButton();
+    }
+  }
+
+  function togglePanel() {
     panelOpen = !panelOpen;
     // BUGFIX: build the panel on demand if it isn't there yet, so the
     // button always opens it even if the init-time build step failed.
@@ -1455,16 +1525,36 @@
       ensurePanelBuilt();
     } catch (e) {
       console.error("[ObsessionMeter] ensurePanelBuilt() threw during toggle:", e);
-      try { window.toastr ? window.toastr.error("ensurePanelBuilt threw: " + e.message) : alert("ensurePanelBuilt threw: " + e.message); } catch(_) {}
+    }
+    if (panelEl && panelOpen) {
+      // Position BEFORE revealing — same ordering as Phone UI's
+      // togglePanel(), so the panel appears already anchored near the
+      // icon (or its sticky dragged spot) instead of showing briefly
+      // at the old/default position first.
+      try {
+        positionPanelForOpen();
+      } catch (e) {
+        console.error("[ObsessionMeter] positionPanelForOpen() threw:", e);
+      }
     }
     if (panelEl) {
+      // BUGFIX: matches Phone UI's togglePanel() exactly now — the
+      // .om-hidden class is the ONE source of truth for shown/hidden.
+      // This used to also write an inline `style.display` on top of
+      // the class toggle ("belt and suspenders"). That's exactly what
+      // Phone UI's forceFixedStyle() comment warns against: an inline
+      // !important display always outranks the class rule, so if
+      // anything ever left that inline write out of sync with the
+      // class (a thrown error between the two lines, a stale write
+      // from a previous version, etc.) the two could disagree and the
+      // panel would get stuck permanently shown or permanently
+      // hidden, with the class saying one thing and the inline style
+      // silently overruling it. forceFixedStyle() below still forces
+      // position/z-index/visibility/opacity/pointer-events — just
+      // never display — so nothing else on the page can bury the
+      // panel while it's supposed to be open, without also being able
+      // to override the open/close state itself.
       panelEl.classList.toggle("om-hidden", !panelOpen);
-      // Belt-and-suspenders: set the inline display directly too
-
-      // (highest possible specificity) instead of relying solely on
-      // the external .om-hidden stylesheet rule, in case style.css
-      // failed to load/apply for any reason.
-      panelEl.style.setProperty("display", panelOpen ? "flex" : "none", "important");
       forceFixedStyle(panelEl);
     }
     if (panelOpen) {
@@ -1554,36 +1644,39 @@
     return [Math.max(0, Math.min(maxX, x)), Math.max(0, Math.min(maxY, y))];
   }
 
-  // REWRITTEN (v17): the previous version made native `click` the only
-  // trigger for onTap(). That was based on the theory that click is the
-  // one event every environment fires correctly — but this user's own
-  // saved settings prove otherwise: topBtnX/topBtnY only get written by
-  // onDrop(), which only runs from the pointer/touch release handler.
-  // That's direct evidence pointerdown/pointermove/pointerup (or their
-  // touch equivalents) DO fire correctly on this device — so click was
-  // the wrong thing to bet the whole tap on.
-  //
-  // Fixed by firing onTap() directly from the same pointerup/touchend
-  // handler that already reads the drag distance — the same code path
-  // proven to work by the saved position — instead of waiting on a
-  // separate `click` event that may never come. `click` is kept only
-  // as a fallback for the opposite case (a device that never fires
-  // pointer/touch events on this element at all, only click), and is
-  // suppressed once a pointer/touch release has already resolved the
-  // gesture so a device where both fire doesn't double-open/double-
-  // close the panel.
   function makeDraggable(el, onDrop, handleEl, onTap) {
     const dragHandle = handleEl || el;
     let dragging = false;
     let moved = false;
     let startX, startY, origX, origY;
-    let resolvedByPointerOrTouch = false;
     const MOVE_THRESHOLD = 12; // px — below this, it's a tap, not a drag
 
-    function down(x, y) {
+    // BUGFIX (root cause of "button reacts on Termux/mobile, panel never
+    // opens" across every earlier attempt): every previous version of
+    // this function routed the tap itself through a pointer/touch
+    // "gesture" state machine, and only fell back to the plain `click`
+    // event when that state machine hadn't already claimed the
+    // interaction. That's backwards for reliability: pointerdown/
+    // pointerup and touchstart/touchend are exactly the events that
+    // Android WebViews are inconsistent about — the OS's own scroll/
+    // gesture recognizer can swallow pointerup or touchend mid-tap even
+    // with touch-action:none set, and when that happens the tap simply
+    // never resolves, with nothing to log.
+    //
+    // `click` does not have this problem. Every environment that can
+    // register a tap on an element — including ones with partial or
+    // absent Pointer/Touch Events support — fires a plain `click` for
+    // it; it's the one event a tap is guaranteed to produce. So click
+    // is now the SOLE trigger for onTap(), unconditionally, every
+    // time. Pointer/touch events are used only to detect an actual
+    // drag (real, sustained finger movement past MOVE_THRESHOLD) and
+    // to suppress the one click that follows a real drag — they no
+    // longer gate whether a tap fires at all.
+    let suppressNextClick = false;
+
+    function startGesture(x, y) {
       dragging = true;
       moved = false;
-      resolvedByPointerOrTouch = false;
       startX = x;
       startY = y;
       const rect = el.getBoundingClientRect();
@@ -1591,14 +1684,13 @@
       origY = rect.top;
     }
 
-    function move(x, y) {
+    function moveGesture(x, y) {
       if (!dragging) return;
       const dx = x - startX;
       const dy = y - startY;
-      if (!moved && (Math.abs(dx) > MOVE_THRESHOLD || Math.abs(dy) > MOVE_THRESHOLD)) {
+      if (Math.abs(dx) > MOVE_THRESHOLD || Math.abs(dy) > MOVE_THRESHOLD) {
         moved = true;
       }
-      if (!moved) return; // don't reposition until a real drag is confirmed
       let nx = origX + dx;
       let ny = origY + dy;
       nx = Math.max(0, Math.min(window.innerWidth - el.offsetWidth, nx));
@@ -1609,40 +1701,52 @@
       el.style.bottom = "auto";
     }
 
-    // Called from both pointerup and touchend. On a device where both
-    // fire for the same physical tap, the second call is a guaranteed
-    // no-op because `dragging` is already false by then.
-    function up() {
+    function endGesture() {
       if (!dragging) return;
       dragging = false;
-      resolvedByPointerOrTouch = true;
       if (moved) {
+        // A real drag happened — reposition, and swallow the `click`
+        // that the browser fires right after pointerup/touchend so it
+        // doesn't also toggle the panel. The click is only suppressed
+        // once; if it never arrives (some environments don't fire one
+        // after a drag) the flag is cleared shortly after anyway so it
+        // can never get stuck suppressing a future, unrelated tap.
+        suppressNextClick = true;
+        setTimeout(() => {
+          suppressNextClick = false;
+        }, 400);
         const rect = el.getBoundingClientRect();
         onDrop(rect.left, rect.top);
-      } else if (onTap) {
-        onTap();
       }
+      // A plain tap (moved === false) does nothing here — onTap() is
+      // fired exclusively from the click listener below, once, for
+      // every environment.
     }
 
     dragHandle.addEventListener("pointerdown", (e) => {
       if (e.target.closest(".om-no-drag")) return;
-      down(e.clientX, e.clientY);
+      startGesture(e.clientX, e.clientY);
+      try {
+        dragHandle.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* capture not supported/failed — drag tracking still works below */
+      }
     });
-    dragHandle.addEventListener("pointermove", (e) => move(e.clientX, e.clientY));
-    // Listened on window, not dragHandle: if the pointer leaves the
-    // button mid-drag (no capture anymore) the release still has to
-    // end the gesture, or `dragging` gets stuck true forever.
-    window.addEventListener("pointerup", up);
-    window.addEventListener("pointercancel", () => {
-      dragging = false; // abort silently — neither a tap nor a completed drag
-    });
+    dragHandle.addEventListener("pointermove", (e) => moveGesture(e.clientX, e.clientY));
+    dragHandle.addEventListener("pointerup", endGesture);
+    dragHandle.addEventListener("pointercancel", endGesture);
 
+    // Raw touch events as an independent path, purely for drag
+    // tracking on WebViews where touch fires but Pointer Events don't
+    // (or behave oddly). Guarded so a device that fires both doesn't
+    // double-start the same drag.
     dragHandle.addEventListener(
       "touchstart",
       (e) => {
+        if (dragging) return;
         if (e.target.closest(".om-no-drag")) return;
         const t = e.touches && e.touches[0];
-        if (t) down(t.clientX, t.clientY);
+        if (t) startGesture(t.clientX, t.clientY);
       },
       { passive: true }
     );
@@ -1650,24 +1754,23 @@
       "touchmove",
       (e) => {
         const t = e.touches && e.touches[0];
-        if (t) move(t.clientX, t.clientY);
+        if (t) moveGesture(t.clientX, t.clientY);
       },
       { passive: true }
     );
-    window.addEventListener("touchend", up);
+    dragHandle.addEventListener("touchend", endGesture);
+    dragHandle.addEventListener("touchcancel", endGesture);
 
-    // Fallback only: handles a device that fires neither pointer nor
-    // touch events on this element at all (rare, but possible in some
-    // embedded shells) and only ever dispatches click. Suppressed
-    // whenever pointer/touch already resolved this same gesture, so a
-    // normal device that fires both doesn't act on the tap twice.
+    // The single, unconditional source of truth for taps. Doesn't
+    // check any pointer/touch flag — if a real drag just finished,
+    // suppressNextClick swallows this one click; otherwise it's a tap
+    // and onTap() fires, full stop.
     dragHandle.addEventListener("click", (e) => {
       if (e.target.closest(".om-no-drag")) return;
-      if (resolvedByPointerOrTouch) {
-        resolvedByPointerOrTouch = false;
+      if (suppressNextClick) {
+        suppressNextClick = false;
         return;
       }
-      if (moved) return;
       if (onTap) onTap();
     });
   }
@@ -1695,14 +1798,47 @@
   // the top-bar button, plus re-asserted after every render (belt-and-
   // suspenders, same as Phone UI's post-reset re-assertion) in case a
   // re-render replaces attributes in a way a host rule could exploit.
+
+  // Appends `el` to whichever of <html>/<body> actually renders a
+  // `position: fixed` element correctly on THIS browser/WebView,
+  // instead of assuming one always works. Past versions of this file
+  // picked <body> (broke on hosts that apply CSS transforms to
+  // <body>, which re-anchors fixed children to the transformed
+  // ancestor instead of the viewport), then switched to <html>
+  // (reportedly broken on some Android WebView/Electron builds
+  // instead). Both claims are plausible and neither is universally
+  // true, so rather than guess again: append to <html> first, measure
+  // the element's actual on-screen rect after layout, and if it comes
+  // back zero-size/off-screen, remove it and retry against <body>
+  // instead. Whichever one actually paints wins, per-device, with no
+  // guesswork.
+  function mountFixedEl(el, label) {
+    const primary = document.documentElement || document.body;
+    const fallback = document.documentElement ? document.body : null;
+    primary.appendChild(el);
+    forceFixedStyle(el);
+    requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect();
+      const painted = r.width > 0 && r.height > 0;
+      if (!painted && fallback && el.parentNode === primary) {
+        console.warn(
+          `[ObsessionMeter] ${label || "element"} rendered with zero size on <${primary.tagName.toLowerCase()}> ` +
+            `(width=${r.width}, height=${r.height}) — retrying on <${fallback.tagName.toLowerCase()}>.`
+        );
+        fallback.appendChild(el);
+        forceFixedStyle(el);
+      }
+    });
+  }
+
   function forceFixedStyle(el) {
     if (!el) return;
     el.style.setProperty("position", "fixed", "important");
-    // BUGFIX: absolute maximum z-index (999999999) so nothing on the
+    // BUGFIX: absolute maximum z-index (2147483647) so nothing on the
     // page — including ST's own modals/drawers/overlays — can stack
     // above the panel or button. Previously 2147483646, one below max,
     // which left room for a host element at the true max to bury it.
-    el.style.setProperty("z-index", "999999999", "important");
+    el.style.setProperty("z-index", "2147483647", "important");
     el.style.setProperty("visibility", "visible", "important");
     el.style.setProperty("opacity", "1", "important");
     el.style.setProperty("pointer-events", "auto", "important");
@@ -1779,11 +1915,36 @@
     // it, re-anchoring it to that transformed ancestor instead of the
     // viewport. Appending straight to <html> instead keeps this
     // element outside whatever ST is transforming, same fix Phone UI
-    // already uses. This matches the working fixed8/fixed9 setup.
-    (document.documentElement || document.body).appendChild(panelEl);
+    // already uses.
+    //
+    // Neither <html> nor <body> is universally safe across every
+    // browser/WebView this extension might run in — reports disagree
+    // on which one actually paints `position: fixed` children
+    // correctly on a given build, and this file has flip-flopped on
+    // it before. Rather than pick one on faith again, mountFixedEl()
+    // appends to <html> first, measures whether it actually rendered
+    // with real on-screen pixels, and automatically retries against
+    // <body> if it didn't — so the correct container is detected at
+    // runtime instead of assumed.
+    mountFixedEl(panelEl, "panel");
     forceFixedStyle(panelEl);
 
-    renderPanel();
+    // BUGFIX: renderPanel() (-> renderPanelBody()) can throw on bad
+    // per-chat data. It used to be called unguarded here, so a throw
+    // propagated straight out of ensurePanelBuilt() — which, before the
+    // init() fix above, could take the top-bar button down with it, and
+    // even now would otherwise leave panelEl appended-but-connected with
+    // nothing to show, so the `if (panelEl && panelEl.isConnected)
+    // return true` guard at the top of this function would skip
+    // retrying the render on every later open. Catching it here means
+    // the panel element always exists and is appendable/openable even
+    // if its first render attempt failed, and the error is visible
+    // instead of silently aborting setup.
+    try {
+      renderPanel();
+    } catch (e) {
+      console.error("[ObsessionMeter] renderPanel() failed during initial build:", e);
+    }
 
     // Panel drags by its own header once it exists — re-bind on every
     // render since header markup is regenerated each time.
@@ -1869,119 +2030,133 @@
   // when it does load, since these are the same values) means the
   // button is guaranteed visible even if the external stylesheet
   // never applies at all.
-  function applyInlineButtonFallbackStyle(btn) {
-    btn.style.setProperty("top", btn.style.top || "6px", "important");
-    if (!btn.style.left) btn.style.setProperty("right", btn.style.right || "20px", "important");
-    btn.style.setProperty("display", "flex", "important");
-    btn.style.setProperty("align-items", "center", "important");
-    btn.style.setProperty("gap", "6px", "important");
-    btn.style.setProperty("background", "#2a1830", "important");
-    btn.style.setProperty("border", "1px solid #5a3a66", "important");
-    btn.style.setProperty("color", "#d98fc4", "important");
-    btn.style.setProperty("font-size", "12px", "important");
-    btn.style.setProperty("font-family", "sans-serif", "important");
-    btn.style.setProperty("padding", "4px 10px", "important");
-    btn.style.setProperty("border-radius", "999px", "important");
-    btn.style.setProperty("white-space", "nowrap", "important");
-    btn.style.setProperty("cursor", "grab", "important");
-    btn.style.setProperty("box-shadow", "0 2px 8px rgba(0,0,0,0.5)", "important");
+  // ---------------------------------------------------------------
+  // Top-bar icon — lives INSIDE SillyTavern's own icon row
+  // (#top-settings-holder, confirmed against ST's current index.html:
+  // it's the container that holds the AI Response Configuration,
+  // User Settings, etc. icons) instead of a self-positioned floating
+  // element. Two concrete reliability wins over the floating-button
+  // approach: (1) it's laid out by ST itself, so it can't end up
+  // covered by other fixed elements, clipped by a transformed
+  // ancestor, or parked off the visible viewport — all real failure
+  // modes a fixed-position element is exposed to; (2) it participates
+  // in ST's existing flex row, so it's centered/aligned the same way
+  // every other icon in that row already is, with no custom
+  // positioning math of our own to get wrong.
+  //
+  // A previous version of this file tried this same idea and reverted
+  // it after two specific problems: (a) it depended on the exact
+  // internal structure of #top-settings-holder, which differs across
+  // ST themes/versions, and (b) it reused ST's own ".drawer" /
+  // ".drawer-toggle" classes, which made ST's own delegated
+  // drawer-toggle click handling also act on this element — a second,
+  // independent source of "looks right, does nothing." This version
+  // avoids both: it only depends on the *container* existing (nothing
+  // about its internal markup), and the icon carries none of ST's
+  // drawer classes — only its own id and its own click handling.
+  //
+  // If #top-settings-holder isn't present at all (an ST build/theme
+  // where it's been renamed or restructured), this falls back to a
+  // small fixed corner icon so the feature is never just silently
+  // absent — degraded, but still there and still clickable.
+  // ---------------------------------------------------------------
+
+  let topBarWatchdogHandle = null;
+
+  function styleTopBarIcon(icon) {
+    icon.style.setProperty("display", "inline-flex", "important");
+    icon.style.setProperty("align-items", "center", "important");
+    icon.style.setProperty("justify-content", "center", "important");
+    icon.style.setProperty("cursor", "pointer", "important");
+    icon.style.setProperty("color", "#d98fc4", "important");
+    icon.style.setProperty("pointer-events", "auto", "important");
+    icon.style.setProperty("-webkit-tap-highlight-color", "rgba(217,143,196,0.4)", "important");
+  }
+
+  // Inserts the icon into ST's own icon row, at the middle position
+  // among whatever icons are already there (rather than appended at
+  // the end), so it visually sits among ST's own icons instead of
+  // trailing after all of them.
+  function createTopBarIconInHolder(holder) {
+    const icon = document.createElement("div");
+    icon.id = "om-topbar-button";
+    icon.className = "fa-solid fa-heart-crack fa-fw";
+    icon.title = "Obsession Meter";
+    icon.setAttribute("role", "button");
+    icon.setAttribute("aria-label", "Obsession Meter");
+    styleTopBarIcon(icon);
+    const kids = holder.children;
+    const midIndex = kids && kids.length ? Math.floor(kids.length / 2) : 0;
+    const refNode = kids && kids.length ? kids[midIndex] : null;
+    if (refNode) {
+      holder.insertBefore(icon, refNode);
+    } else {
+      holder.appendChild(icon);
+    }
+    return icon;
+  }
+
+  // Fallback used only when #top-settings-holder can't be found at
+  // all: a small fixed-position icon, same id/behavior, just not
+  // living inside ST's own layout.
+  function createFallbackTopBarIcon() {
+    const icon = document.createElement("div");
+    icon.id = "om-topbar-button";
+    icon.className = "fa-solid fa-heart-crack fa-fw";
+    icon.title = "Obsession Meter";
+    icon.setAttribute("role", "button");
+    icon.setAttribute("aria-label", "Obsession Meter");
+    mountFixedEl(icon, "fallback topbar icon");
+    styleTopBarIcon(icon);
+    icon.style.setProperty("top", "6px", "important");
+    icon.style.setProperty("right", "20px", "important");
+    icon.style.setProperty("font-size", "18px", "important");
+    icon.style.setProperty("background", "#2a1830", "important");
+    icon.style.setProperty("border", "1px solid #5a3a66", "important");
+    icon.style.setProperty("border-radius", "999px", "important");
+    icon.style.setProperty("padding", "6px", "important");
+    return icon;
+  }
+
+  function ensureTopBarIconExists() {
+    if (document.getElementById("om-topbar-button")) return;
+    const holder = document.getElementById("top-settings-holder");
+    if (holder) {
+      createTopBarIconInHolder(holder);
+    } else {
+      console.warn(
+        "[ObsessionMeter] #top-settings-holder not found — falling back to a floating corner icon."
+      );
+      createFallbackTopBarIcon();
+    }
   }
 
   function buildTopBarButton() {
-    if (document.getElementById("om-topbar-button")) return; // already added
+    ensureTopBarIconExists();
 
-    // A plain native <button> fixed to the top-right. Tap-to-open goes
-    // through a single native 'click' listener (see makeDraggable) —
-    // that's the one signal every browser/WebView already generates
-    // correctly for a tap, so nothing here tries to reconstruct it.
-    // Dragging is layered on top purely to reposition the button; it
-    // never gates whether the click opens the panel.
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.id = "om-topbar-button";
-    btn.innerHTML = `<i class="fa-solid fa-heart-crack"></i> Obsession Meter`;
-    btn.title = "Tap to open";
-    // Same transformed-ancestor/host-CSS guard as the panel above:
-    // append to <html> so the button isn't inside a transformed <body>.
-    // Matches the working fixed8/fixed9 setup.
-    (document.documentElement || document.body).appendChild(btn);
-    forceFixedStyle(btn);
-    applyInlineButtonFallbackStyle(btn);
-    // Belt-and-suspenders on top of applyInlineButtonFallbackStyle:
-    // reset default <button> chrome (border/background/font quirks
-    // vary by browser) so it can't accidentally end up with e.g.
-    // pointer-events:none or a zero-size default appearance on some
-    // WebView.
-    btn.style.setProperty("pointer-events", "auto", "important");
-    btn.style.setProperty("touch-action", "none", "important");
-    btn.style.setProperty("-webkit-tap-highlight-color", "rgba(217,143,196,0.4)", "important");
-
-    // Apply a saved drag position (if any), clamped to the viewport so
-    // a position saved on a different-sized screen can't park the
-    // button off-screen.
-    const gs0 = getGlobalSettings();
-    if (gs0.topBtnX !== null && gs0.topBtnY !== null) {
-      const [bx, by] = clampToViewport(gs0.topBtnX, gs0.topBtnY, btn.offsetWidth || 130, btn.offsetHeight || 24);
-      btn.style.left = `${bx}px`;
-      btn.style.top = `${by}px`;
-      btn.style.right = "auto";
-      btn.style.bottom = "auto";
+    // Delegated listener bound once to `document`, forever — doesn't
+    // care whether the icon lives inside ST's holder or the fallback
+    // position, or whether it gets recreated later; it just matches
+    // on id.
+    if (!document.__omTopBarClickDelegated) {
+      document.__omTopBarClickDelegated = true;
+      document.addEventListener("click", (e) => {
+        const hit = e.target && e.target.closest && e.target.closest("#om-topbar-button");
+        if (hit) togglePanel();
+      });
     }
 
-    // BUGFIX: the button is now draggable (like the panel's header).
-    // makeDraggable fires onTap() when the pointer didn't move past the
-    // drag threshold, so a plain tap still toggles the panel while a
-    // real drag repositions the button and saves the new spot. The
-    // native click listener is removed to avoid double-firing — the
-    // gesture state machine handles both tap and drag.
-    makeDraggable(
-      btn,
-      (x, y) => {
-        const gs = getGlobalSettings();
-        gs.topBtnX = x;
-        gs.topBtnY = y;
-        saveGlobalSettings();
-      },
-      btn,
-      togglePanel
-    );
-
-    // BUGFIX (self-check): after paint, verify the button actually
-    // has real on-screen size and sits within the viewport. If it
-    // doesn't, something outside this file's control still won —
-    // instead of failing silently, log the exact numbers (so it's
-    // diagnosable) and snap it back to a known-good spot rather than
-    // leaving it stranded with zero size or off-screen.
-    requestAnimationFrame(() => {
-      const rect = btn.getBoundingClientRect();
-      const onScreen =
-        rect.width > 0 &&
-        rect.height > 0 &&
-        rect.right > 0 &&
-        rect.bottom > 0 &&
-        rect.left < window.innerWidth &&
-        rect.top < window.innerHeight;
-      if (!onScreen) {
-        console.warn(
-          `[ObsessionMeter] top-bar button rendered with unexpected geometry ` +
-            `(width=${rect.width}, height=${rect.height}, left=${rect.left}, top=${rect.top}). ` +
-            `Forcing it back to the default position.`
-        );
-        btn.style.setProperty("left", "auto", "important");
-        btn.style.setProperty("right", "20px", "important");
-        btn.style.setProperty("top", "6px", "important");
-        btn.style.setProperty("bottom", "auto", "important");
-        const gs = getGlobalSettings();
-        gs.topBtnX = null;
-        gs.topBtnY = null;
-        saveGlobalSettings();
-      } else {
-        console.log(
-          `[ObsessionMeter] top-bar button confirmed on-screen at ` +
-            `(${Math.round(rect.left)}, ${Math.round(rect.top)}), ${Math.round(rect.width)}x${Math.round(rect.height)}.`
-        );
+    // Watchdog: re-insert the icon if it's ever missing, and
+    // re-evaluate whether #top-settings-holder exists yet each time
+    // (in case ST's own UI wasn't fully built the first time this
+    // ran and the icon had to use the fallback position initially).
+    if (topBarWatchdogHandle) clearInterval(topBarWatchdogHandle);
+    topBarWatchdogHandle = setInterval(() => {
+      if (!document.getElementById("om-topbar-button")) {
+        console.warn("[ObsessionMeter] top-bar icon vanished from the DOM — rebuilding it.");
       }
-    });
+      ensureTopBarIconExists();
+    }, 2000);
   }
 
   // ---------------------------------------------------------------
@@ -2223,8 +2398,17 @@
       console.error("[ObsessionMeter] ensurePanelBuilt() threw during openPanelForce:", e);
     }
     if (panelEl) {
+      // Same position-before-reveal as togglePanel() — /om and the
+      // drawer's "Open panel" button are just other doors into the
+      // same panel, so they should open it the same way.
+      try {
+        positionPanelForOpen();
+      } catch (e) {
+        console.error("[ObsessionMeter] positionPanelForOpen() threw:", e);
+      }
+      // Class-only reveal, matching togglePanel()/Phone UI — see the
+      // comment there for why the inline display write was removed.
       panelEl.classList.remove("om-hidden");
-      panelEl.style.setProperty("display", "flex", "important");
       forceFixedStyle(panelEl);
     }
     // BUGFIX: same reset as togglePanel's open branch — without this,
@@ -2326,16 +2510,43 @@
     // unavailable. We then try to swap in the real context in the
     // background.
     context = makeFallbackContext();
+    // BUGFIX: buildUi() (== ensurePanelBuilt(), which also calls
+    // renderPanel()/renderPanelBody()) and buildTopBarButton() used to
+    // share ONE try/catch. If anything inside buildUi() threw — most
+    // plausibly renderPanelBody() choking on stale per-chat character
+    // data saved by an older version of this extension — the exception
+    // jumped straight past buildTopBarButton() and it never ran. Net
+    // effect: no panel AND no button AND no way to open the panel at
+    // all (the /om command isn't registered until further down either),
+    // with only a red error banner (easy to miss) as any sign something
+    // went wrong. That's indistinguishable from "the panel just doesn't
+    // show up." Each step now gets its own try/catch, same as the
+    // `steps` list below, so a failure in one can never take out the
+    // other — worst case you get the button without the panel body
+    // rendering correctly, or vice versa, instead of losing both.
     try {
       buildUi();
-      buildTopBarButton();
-      // BUGFIX: auto-open the panel on load, matching the working
-      // fixed8/fixed9 setup. The panel is visible the moment the
-      // extension loads, so the tracker always shows up. (The button
-      // still toggles it open/closed afterward.)
-      openPanelForce();
     } catch (e) {
-      showLoadError(`UI build failed: ${e && e.stack ? e.stack : e}`);
+      showLoadError(`Panel build failed: ${e && e.stack ? e.stack : e}`);
+    }
+    try {
+      buildTopBarButton();
+    } catch (e) {
+      showLoadError(`Top-bar button build failed: ${e && e.stack ? e.stack : e}`);
+    }
+    try {
+      // BUGFIX (verified live): this used to call openPanelForce() here,
+      // auto-opening the panel the instant the page loads. That leaves
+      // panelOpen already true before anyone touches anything — so the
+      // very first tap on the button runs togglePanel(), which flips an
+      // already-true panelOpen to false and closes the panel that just
+      // silently opened on its own. From the outside that's "nothing
+      // happens when I click" (the open was invisible, the click is what
+      // hides it). Just build the (hidden) panel and leave it closed
+      // until the button/`/om`/drawer actually opens it.
+      ensurePanelBuilt();
+    } catch (e) {
+      showLoadError(`ensurePanelBuilt() failed: ${e && e.stack ? e.stack : e}`);
     }
 
     let realContext = null;

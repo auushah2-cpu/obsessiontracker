@@ -4,45 +4,33 @@
   font-display: swap;
 }
 
-/* Top button — owns its own fixed position, independent of any
-   SillyTavern-internal container. High z-index and pointer-events:auto
-   so nothing ST renders can sit on top of it or eat its clicks.
-   Draggable exactly like the floating heart-crack button (see
-   makeDraggable / om-toggle-btn below), just anchored near the top by
-   default instead of the bottom-right corner. */
+/* Top-bar icon — lives inside SillyTavern's own #top-settings-holder
+   icon row (see buildTopBarButton/createTopBarIconInHolder in
+   index.js) so it's positioned and aligned by ST's own layout instead
+   of a self-managed fixed position. Deliberately unstyled beyond
+   what's needed to look like a sibling of ST's other icons and read
+   as clickable — no background/border/pill chrome, since those made
+   sense for a standalone floating badge but would look out of place
+   sitting among ST's plain icon-only buttons. */
 #om-topbar-button {
-  /* !important here matches the inline forceFixedStyle() guard set
-     in index.js — belt-and-suspenders so a host-page/theme rule that
-     also targets position/z-index/visibility/opacity/pointer-events
-     can't silently win the cascade and blank this element out. */
-  position: fixed !important;
-  top: 6px;
-  right: 20px;
-  z-index: 999999999 !important;
-  pointer-events: auto;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: linear-gradient(145deg, #2a1830, #1a0f20);
-  border: 1px solid #5a3a66;
+  justify-content: center;
+  cursor: pointer;
   color: #d98fc4;
-  font-size: 12px;
-  font-family: sans-serif;
-  padding: 4px 10px;
-  border-radius: 999px;
-  cursor: grab;
-  touch-action: none;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 8px;
+  pointer-events: auto;
   user-select: none;
-}
-#om-topbar-button:active {
-  cursor: grabbing;
+  transition: color 0.15s ease, transform 0.15s ease;
 }
 #om-topbar-button:hover {
-  border-color: #d98fc4;
-}
-#om-topbar-button i {
   color: #e0558f;
+  transform: scale(1.08);
+}
+#om-topbar-button:active {
+  transform: scale(0.92);
 }
 
 /* Pulse animation used to draw attention to the top-bar button (e.g.
@@ -67,6 +55,12 @@
 
 #om-panel {
   position: fixed !important;
+  /* Fallback position only — like Phone UI's #phoneui-panel, these
+     right/bottom values only matter for the instant before JS has
+     run. positionPanelForOpen() (index.js) sets the real left/top
+     inline every time the panel opens, anchoring it near the topbar
+     icon (or a manually dragged sticky spot) instead of always
+     landing here. */
   right: 20px;
   bottom: 150px;
   width: 300px;
@@ -98,85 +92,32 @@
      button fully visible above it — "click it, nothing shows" with
      the panel actually open and fully rendered the whole time,
      just buried. Matching the button's z-index here closes that gap. */
-  z-index: 999999999 !important;
+  z-index: 2147483647 !important;
   pointer-events: auto;
-  /* BUGFIX (THE silent bug that produces "nothing pops up, no matter
-     the command or the button, nothing in the console"): this used
-     to be plain `display: flex;`. The JS side writes
-     `panelEl.style.setProperty("display", "flex", "important")` inline
-     when opening — so on paper the panel should always be shown. But
-     that guarantees the *shown* state via inline important; the
-     stylesheet declaration itself was still un-!important. That means
-     any rule from anywhere else on the page targeting #om-panel with
-     an equal-or-higher specificity + !important could silently win —
-     e.g. a SillyTavern theme setting `body #om-panel { display: none
-     !important }` for its own drawer nesting, or (more commonly) a
-     theme's global `#om-panel[hidden]` / `.some-container > *`
-     override that lands after ours in the cascade. When that happens
-     the .om-hidden class is removed correctly, the inline write
-     happens correctly, but the panel still resolves to display:none
-     because the losing cascade path is the one browsers with
-     stricter cascade handling actually pick when inline !important
-     and rule !important tie (they shouldn't, but real Android
-     WebViews really do get this wrong). Making the base display
-     !important closes the last gap: shown state is now as protected
-     as hidden state, and no external rule can bury the panel. */
-  display: flex !important;
+  /* Single source of truth for shown/hidden: base rule is plain
+     `display: flex` (NOT !important), and .om-hidden below is
+     `display: none !important`. An !important declaration always
+     beats a non-!important one regardless of selector specificity —
+     full stop, no cascade math needed — so there's no scenario where
+     these two rules can disagree.
+     This used to be `display: flex !important;` here too, which only
+     "worked" because .om-hidden was bumped to #om-panel.om-hidden
+     (specificity 110) to out-rank it (specificity 100) at equal
+     !important weight. That's correct per spec, but it's an
+     unnecessary specificity race between two !important rules for a
+     problem that doesn't need one — and it's exactly the kind of
+     tie-break some older/quirkier WebViews have been reported to get
+     wrong. Removing !important from the base rule removes the race
+     entirely: hidden always wins, unconditionally. */
+  display: flex;
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
   font-family: inherit;
   color: #e8dcee;
-  /* BUGFIX (the actual root cause of "panel doesn't pop up on
-     Termux/mobile, works fine on desktop"): this block used to be
-     `-webkit-transform: translateZ(0); transform: translateZ(0);
-     will-change: transform;` as a cargo-culted "force GPU
-     compositing" hack. On desktop Chrome/Firefox that's a harmless
-     no-op — the panel renders exactly the same with or without it.
-     On the Android System WebView bundled with Termux (and any older
-     Chromium-based mobile browser), the combination `position: fixed`
-     + `transform: translateZ(0)` + `will-change: transform` on the
-     SAME element is a long-standing rendering bug: the fixed element
-     gets promoted to its own compositing layer, but the layer's
-     transform baseline and the fixed positioning's viewport anchor
-     disagree, and the panel ends up rendered in an offscreen tile
-     that the browser never paints back into the visible surface.
-     Everything looks correct — element is in the DOM, class is
-     right, computed display is flex, getBoundingClientRect returns a
-     nonzero rect — but there's nothing on screen, no console error,
-     no anything. And ensurePanelOnScreen() can't help because as far
-     as it's concerned the rect IS on screen; the browser just
-     doesn't paint it. Removing the transform hints entirely (the
-     panel doesn't animate itself — it has no reason to be composited)
-     eliminates this whole class of bug. This is *the* line that was
-     making the panel invisible for you. */
 }
 
-/* BUGFIX (the main fix — see forceFixedStyle() in index.js): the
-   panel's open/closed state used to be driven purely by an inline
-   panelEl.style.display write, with no !important. Any other rule
-   on the page that also happens to set `display` on this element
-   (including something as generic as a wide `.some-ST-theme *`
-   selector, or simply a stylesheet that finishes loading after
-   ours) can silently win and either pin the panel permanently
-   hidden or permanently shown regardless of what the JS thinks
-   panelOpen is — with nothing to log, since nothing throws. A
-   dedicated !important class closes that gap: inline !important
-   (set by forceFixedStyle for position/z-index/etc.) and this class
-   together mean nothing else on the page can out-rank either the
-   panel's positioning or its shown/hidden state. */
-/* BUGFIX: promoted to `#om-panel.om-hidden` from just `.om-hidden`.
-   The shown-state rule at the top of this file is now
-   `#om-panel { display: flex !important; }` (ID specificity 100,
-   important), which was necessary to keep any external theme rule
-   from burying the shown state. With that in place, a plain
-   `.om-hidden { display: none !important; }` — class specificity
-   10, important — LOSES the specificity tie-break against the shown
-   rule (equal-important, higher specificity wins), and the panel
-   ends up permanently visible even when JS is asking for hidden.
-   Adding the `#om-panel` prefix bumps this to specificity 110, so
-   it correctly beats the shown rule when the class is present. */
-#om-panel.om-hidden {
+.om-hidden {
   display: none !important;
 }
 
